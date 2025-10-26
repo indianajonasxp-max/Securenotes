@@ -1,0 +1,17 @@
+[workspace]
+members = ["secure-notes"]
+resolver = "2"
+
+[workspace.dependencies]
+eframe = "0.28"
+egui = "0.28"
+egui_extras = { version = "0.28", features = ["image"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.22"
+pulldown-cmark = "0.11"
+chrono = { version = "0.4", features = ["serde"] }
+directories = "5.0"
