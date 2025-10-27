@@ -48,12 +48,13 @@ Features include:
 
 ### Installation
 
-1. Clone or navigate to the repository:
+1. Clone the repository to ensure you have the latest features:
 ```bash
-cd c:\Users\IJXP\Documents\dd
+git clone https://github.com/<your-username>/Securenotes.git
+cd Securenotes
 ```
 
-2. Build the project:
+2. Build the project with Cargo:
 ```bash
 cargo build --release
 ```
