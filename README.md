@@ -1,5 +1,7 @@
 # 🔒 Secure Notes - E2EE Notes App with OpenStreetMap
 
+> We recommend building Secure Notes yourself to ensure you always have the latest features—clone the repo and use Cargo to build it locally.
+
 A local, end-to-end encrypted notes application written in Rust with integrated OpenStreetMap support, Markdown rendering, and route planning capabilities.
 
 ## ✨ Features

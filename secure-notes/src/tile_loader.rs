@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use parking_lot::Mutex;
 use image::DynamicImage;
@@ -14,6 +14,7 @@ pub struct TileCoord {
 #[derive(Debug)]
 pub struct TileLoader {
     cache: Arc<Mutex<HashMap<TileCoord, Option<DynamicImage>>>>,
+    in_flight: Arc<Mutex<HashSet<TileCoord>>>,
     cache_dir: PathBuf,
 }
 
@@ -28,6 +29,7 @@ impl TileLoader {
         
         Self {
             cache: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
             cache_dir,
         }
     }
@@ -47,39 +49,86 @@ impl TileLoader {
         }
 
         // Try to load from disk cache
-        let tile_path = self.get_tile_path(&coord);
+        let tile_path = Self::get_tile_path(&self.cache_dir, &coord);
         if tile_path.exists() {
             if let Ok(img) = image::open(&tile_path) {
                 let mut cache = self.cache.lock();
                 cache.insert(coord, Some(img.clone()));
                 return Some(img);
             }
+        } else {
+            // Ensure directory exists so background workers can save tiles
+            let _ = Self::ensure_tile_dir(&self.cache_dir, &coord);
         }
 
-        // Try to download (blocking for simplicity)
-        if let Ok(img) = self.download_tile(&coord) {
-            // Ensure directory exists before saving
-            self.ensure_tile_dir(&coord);
-            
-            // Save to disk
-            if let Err(e) = img.save(&tile_path) {
-                eprintln!("Failed to save tile to cache: {}", e);
+        // Spawn background loader if not already fetching this tile
+        const MAX_IN_FLIGHT: usize = 16;
+        let mut should_spawn = false;
+        {
+            let mut in_flight = self.in_flight.lock();
+            if !in_flight.contains(&coord) && in_flight.len() < MAX_IN_FLIGHT {
+                in_flight.insert(coord);
+                should_spawn = true;
             }
-            
-            let mut cache = self.cache.lock();
-            cache.insert(coord, Some(img.clone()));
-            return Some(img);
         }
 
-        // Mark as failed in cache
-        let mut cache = self.cache.lock();
-        cache.insert(coord, None);
+        if should_spawn {
+            let cache = Arc::clone(&self.cache);
+            let in_flight = Arc::clone(&self.in_flight);
+            let cache_dir = self.cache_dir.clone();
+
+            std::thread::spawn(move || {
+                let tile = Self::load_or_download_tile(&cache_dir, coord);
+
+                let mut cache_lock = cache.lock();
+                match tile {
+                    Some(ref img) => {
+                        cache_lock.insert(coord, Some(img.clone()));
+                    }
+                    None => {
+                        cache_lock.insert(coord, None);
+                    }
+                }
+                drop(cache_lock);
+
+                let mut in_flight_lock = in_flight.lock();
+                in_flight_lock.remove(&coord);
+            });
+        }
+
         None
     }
 
-    fn download_tile(&self, coord: &TileCoord) -> Result<DynamicImage, Box<dyn std::error::Error>> {
+    fn load_or_download_tile(cache_dir: &Path, coord: TileCoord) -> Option<DynamicImage> {
+        let tile_path = Self::get_tile_path(cache_dir, &coord);
+
+        if tile_path.exists() {
+            match image::open(&tile_path) {
+                Ok(img) => return Some(img),
+                Err(e) => {
+                    eprintln!("Failed to load cached tile {:?}: {}", coord, e);
+                    let _ = std::fs::remove_file(&tile_path);
+                }
+            }
+        }
+
+        match Self::download_tile(&coord) {
+            Ok(img) => {
+                if let Err(e) = Self::save_tile(cache_dir, &coord, &img) {
+                    eprintln!("Failed to save tile {:?} to cache: {}", coord, e);
+                }
+                Some(img)
+            }
+            Err(e) => {
+                eprintln!("Failed to download tile {:?}: {}", coord, e);
+                None
+            }
+        }
+    }
+
+    fn download_tile(coord: &TileCoord) -> Result<DynamicImage, Box<dyn std::error::Error>> {
         let url = Self::get_tile_url(coord.x, coord.y, coord.z);
-        
+
         // Respect OSM tile usage policy - add User-Agent
         let client = reqwest::blocking::Client::builder()
             .user_agent("SecureNotesApp/0.1.0")
@@ -90,23 +139,32 @@ impl TileLoader {
         let bytes = response.bytes()?;
         let img = image::load_from_memory(&bytes)?;
         
-        // Ensure directory exists before saving
-        self.ensure_tile_dir(coord);
-        
         Ok(img)
     }
 
-    fn get_tile_path(&self, coord: &TileCoord) -> PathBuf {
-        self.cache_dir
+    fn get_tile_path(cache_dir: &Path, coord: &TileCoord) -> PathBuf {
+        cache_dir
             .join(format!("{}", coord.z))
             .join(format!("{}", coord.x))
             .join(format!("{}.png", coord.y))
     }
 
-    pub fn ensure_tile_dir(&self, coord: &TileCoord) {
-        let dir = self.cache_dir
+    fn ensure_tile_dir(cache_dir: &Path, coord: &TileCoord) -> std::io::Result<()> {
+        let dir = cache_dir
             .join(format!("{}", coord.z))
             .join(format!("{}", coord.x));
-        std::fs::create_dir_all(dir).ok();
+        std::fs::create_dir_all(dir)
+    }
+
+    fn save_tile(
+        cache_dir: &Path,
+        coord: &TileCoord,
+        img: &DynamicImage,
+    ) -> Result<(), image::ImageError> {
+        if let Err(e) = Self::ensure_tile_dir(cache_dir, coord) {
+            eprintln!("Failed to create cache dir for {:?}: {}", coord, e);
+        }
+
+        img.save(Self::get_tile_path(cache_dir, coord))
     }
 }
