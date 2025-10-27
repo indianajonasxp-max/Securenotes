@@ -22,3 +22,6 @@ geo = "0.28"
 geojson = "0.24"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 parking_lot = "0.12"
+
+[dev-dependencies]
+tempfile.workspace = true
